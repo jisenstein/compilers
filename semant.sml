@@ -23,8 +23,30 @@ struct
 
   (* ...... *)
 
-  fun checkInt _ = ()
+  val ret = {exp=(), ty=T.INT}
 
+  fun checkInt ({exp=exp1, ty=T.INT}, {exp=exp2, ty=T.INT}, pos) = ret
+    | checkInt ({exp=exp1, ty=T.STRING}, {exp=exp2, ty=T.STRING}, pos) = ret
+    | checkInt ({exp=_, ty=_}, {exp=_, ty=_}, pos) = (error pos ("must use type int"); ret)
+
+  fun checkNeqEq ({exp=exp1, ty=T.INT}, {exp=exp2, ty=T.INT}, pos) = (error pos("Geeds r u"); ret)
+    | checkNeqEq ({exp=exp1, ty=T.STRING}, {exp=exp2, ty=T.STRING}, pos) = (error pos("Jeeds r u"); ret)
+    | checkNeqEq ({exp=exp1, ty=T.RECORD(r, unique)}, {exp=exp2, ty=T.NIL}, pos) = (error pos("geeds r u1"); ret)
+    | checkNeqEq ({exp=exp1, ty=T.NIL}, {exp=exp2, ty=T.RECORD(r, unique)}, pos) = ret
+    | checkNeqEq ({exp=exp1, ty=T.ARRAY(a1, unique1)}, {exp=exp2, ty=T.ARRAY(a2, unique2)}, pos) =
+        if unique1 = unique2 then ret
+        else (error pos("cannot compare differing types of arrays"); ret)
+    | checkNeqEq ({exp=exp1, ty=T.RECORD(r1, unique1)}, {exp=exp2, ty=T.RECORD(r2, unique2)}, pos) =
+        if unique1 = unique2 then ret
+        else (error pos("cannot compare differing types of records"); ret)
+    | checkNeqEq ({exp=exp1, ty=_}, {exp=exp2, ty=_}, pos) =
+       (error pos("illegal types for eq/neq comparison"); ret)
+
+  fun debug(pos) = (error pos("geeds r u"); ret)
+
+  fun stringReturn() = {exp=(), ty=T.STRING}
+
+  fun extractType({exp, ty}) = ty
 
  (**************************************************************************
   *                   TRANSLATING TYPE EXPRESSIONS                         *
@@ -46,19 +68,25 @@ struct
   **************************************************************************)
   fun transexp (env, tenv) expr =
     let fun g (A.OpExp {left,oper=A.NeqOp,right,pos}) = 
-                   (* ... *) {exp=(), ty=T.INT}
+                   checkNeqEq(g left, g right, pos)
 
           | g (A.OpExp {left,oper=A.EqOp,right,pos}) =
-                   (* ... *) {exp=(), ty=T.INT} 
+                   checkNeqEq(g left, g right, pos)
 
           | g (A.OpExp {left,oper,right,pos}) =
- 		   (checkInt (g left, pos);
-		    checkInt (g right, pos);
- 		    {exp=(), ty=T.INT})
+		           checkInt(g left, g right, pos)
 
           | g (A.RecordExp {typ,fields,pos}) =
                    (* ... *) {exp=(), ty=T.RECORD ((* ? *) [], ref ())}
 
+          | g (A.StringExp (exp, pos)) = stringReturn()
+          | g (A.LetExp {decs, body, pos}) =
+            let
+              val (env_, tenv_) = transdecs(env, tenv, decs)
+            in
+              (transexp(env_, tenv_) body)
+            end
+              
           | g _ (* other cases *) = {exp=(), ty=T.INT} 
 
         (* function dealing with "var", may be mutually recursive with g *)
@@ -74,7 +102,36 @@ struct
   *                                                                        *
   *  transdec : (E.env * E.tenv * A.dec) -> (E.env * E.tenv)               *
   **************************************************************************)
-  and transdec (env, tenv, A.VarDec(declist)) = (* ... *) (env, tenv)
+  and transdec (env, tenv, A.VarDec({var={name, escape}, typ, init, pos})) =
+    let
+      val init_type = extractType(transexp(env, tenv) init)
+    in
+        case typ of
+             SOME(sym1, pos1) =>
+               (case S.look(tenv, sym1) of
+                    SOME(found_typ) =>
+                      if init_type = found_typ
+                      then
+                        (S.enter(env, name, E.VARentry{access=(),
+                                                       ty=init_type}),
+                                                       tenv)
+                      else
+                        (error pos("Conflicting pre-existing type name:" ^ S.name(name));
+                        (S.enter(env, name,
+                                 E.VARentry{access=(), ty=init_type}), tenv))
+                  | NONE => (error pos("Unknown type:" ^ S.name(name));
+                             (S.enter(env, name,
+                                      E.VARentry{access=(), ty=init_type}),
+                                      tenv)))
+           | NONE =>
+              (case init_type of
+                  T.NIL => (error pos("nil assignment not bound to record");
+                            (S.enter(env, name,
+                                     E.VARentry{access=(), ty=init_type}),
+                             tenv))
+                | t => (S.enter(env, name,
+                                E.VARentry{access=(), ty=init_type}), tenv))
+    end
     | transdec (env, tenv, A.FunctionDec(declist)) = (* ... *) (env, tenv)
     | transdec (env, tenv, A.TypeDec(declist)) = (* ... *) (env, tenv)
 
