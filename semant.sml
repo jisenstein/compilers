@@ -29,9 +29,9 @@ struct
     | checkInt ({exp=exp1, ty=T.STRING}, {exp=exp2, ty=T.STRING}, pos) = ret
     | checkInt ({exp=_, ty=_}, {exp=_, ty=_}, pos) = (error pos ("must use type int"); ret)
 
-  fun checkNeqEq ({exp=exp1, ty=T.INT}, {exp=exp2, ty=T.INT}, pos) = (error pos("Geeds r u"); ret)
-    | checkNeqEq ({exp=exp1, ty=T.STRING}, {exp=exp2, ty=T.STRING}, pos) = (error pos("Jeeds r u"); ret)
-    | checkNeqEq ({exp=exp1, ty=T.RECORD(r, unique)}, {exp=exp2, ty=T.NIL}, pos) = (error pos("geeds r u1"); ret)
+  fun checkNeqEq ({exp=exp1, ty=T.INT}, {exp=exp2, ty=T.INT}, pos) = (print("josh\n"); ret)
+    | checkNeqEq ({exp=exp1, ty=T.STRING}, {exp=exp2, ty=T.STRING}, pos) = ret
+    | checkNeqEq ({exp=exp1, ty=T.RECORD(r, unique)}, {exp=exp2, ty=T.NIL}, pos) = ret
     | checkNeqEq ({exp=exp1, ty=T.NIL}, {exp=exp2, ty=T.RECORD(r, unique)}, pos) = ret
     | checkNeqEq ({exp=exp1, ty=T.ARRAY(a1, unique1)}, {exp=exp2, ty=T.ARRAY(a2, unique2)}, pos) =
         if unique1 = unique2 then ret
@@ -53,7 +53,11 @@ struct
   *                                                                        *
   *              transty : (E.tenv * A.ty) -> (T.ty * A.pos)               *
   *************************************************************************)
-  fun transty (tenv, A.ArrayTy(id, pos)) = (* ... *) (T.UNIT, pos)
+  fun transty (tenv, A.ArrayTy(id, pos)) =
+    (case S.look(tenv, id) of
+        SOME(ty) => (T.ARRAY(ty, ref ()), pos)
+      | NONE => (error pos("unkown type:" ^ S.name(id)); (T.ARRAY(T.INT, ref ()), pos)))
+    
     | transty (tenv, _ (* other cases *)) = (* ... *) (T.UNIT, 0)
 
   (* ...... *)
@@ -79,7 +83,27 @@ struct
           | g (A.RecordExp {typ,fields,pos}) =
                    (* ... *) {exp=(), ty=T.RECORD ((* ? *) [], ref ())}
 
+          | g (A.VarExp(var_exp)) = h(var_exp)
           | g (A.StringExp (exp, pos)) = stringReturn()
+          | g (A.IntExp (_)) = ret
+          | g (A.SeqExp(nil)) = ret
+          | g (A.SeqExp((exp, pos)::nil)) = g exp
+          | g (A.SeqExp((exp, pos)::rest)) = (g exp; g(A.SeqExp(rest)))
+          | g (A.ArrayExp{typ, size, init, pos}) =
+            let
+              val lookup = getOpt(S.look(tenv, typ), T.NIL)
+              val init_type = extractType(g(init)) 
+            in
+              case lookup of
+                T.ARRAY(arr_type, unique) =>
+                  if arr_type = init_type
+                  then
+                    if extractType(g(size)) = T.INT
+                    then {exp=(), ty=T.ARRAY(arr_type, unique)}
+                    else (error pos("array size must be of type INT"); ret)
+                  else (error pos("array types must be the same"); ret)
+                | _ => (error pos("some other array shit"); ret)
+            end
           | g (A.LetExp {decs, body, pos}) =
             let
               val (env_, tenv_) = transdecs(env, tenv, decs)
@@ -90,7 +114,15 @@ struct
           | g _ (* other cases *) = {exp=(), ty=T.INT} 
 
         (* function dealing with "var", may be mutually recursive with g *)
-        and h (A.SimpleVar (id,pos)) = (* ... *) {exp=(), ty=T.INT}
+        and h (A.SimpleVar (id,pos)) =
+          let
+            val result = S.look(env, id)
+          in
+            case result of
+                 SOME(E.VARentry{access=_, ty=ty1}) => {exp=(), ty=ty1}
+               | NONE => (error pos ("cannot find variable" ^ S.name(id)); ret)
+               | _ => (error pos("cannot use function as variable"); ret)
+          end
 	  | h (A.FieldVar (v,id,pos)) = (* ... *) {exp=(), ty=T.INT}
 	  | h (A.SubscriptVar (v,exp,pos)) = (* ... *) {exp=(), ty=T.INT}
 
@@ -133,7 +165,14 @@ struct
                                 E.VARentry{access=(), ty=init_type}), tenv))
     end
     | transdec (env, tenv, A.FunctionDec(declist)) = (* ... *) (env, tenv)
-    | transdec (env, tenv, A.TypeDec(declist)) = (* ... *) (env, tenv)
+    | transdec (env, tenv, A.TypeDec({name, ty, pos}::rest)) =
+      let
+        val (trans, post) = transty(tenv, ty)
+        val tenv' = S.enter(tenv, name, trans)
+      in
+        transdec(env, tenv', A.TypeDec(rest))
+      end
+    | transdec (env, tenv, A.TypeDec(nil)) = (env, tenv)
 
 
   (*** transdecs : (E.env * E.tenv * A.dec list) -> (E.env * E.tenv) ***)
