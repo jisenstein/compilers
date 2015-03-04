@@ -11,7 +11,10 @@ struct
   structure E = Env
   structure S = Symbol
   structure T = Types
+  val loop_level = ref 0
   val error = ErrorMsg.error
+  type looplist = (A.symbol list) ref
+  val loopvars : looplist = ref([])
   type ir_code = unit (* not used for the time being *)
 
   
@@ -23,7 +26,20 @@ struct
 
   (* ...... *)
 
+  fun lookup_loopvar (key: A.symbol, nil) = false
+      | lookup_loopvar (key: A.symbol, x::rest) = if key = x then true else lookup_loopvar(key, rest)
+
   val ret = {exp=(), ty=T.INT}
+  val retunit = {exp=(), ty=T.UNIT}
+
+  fun forInit(name) = (loop_level := !loop_level + 1; loopvars := name :: !loopvars)
+  fun forDeinit() = (loop_level := !loop_level - 1; loopvars := tl(!loopvars))
+
+  fun varsym(name: A.var) =
+    case name of
+       A.SimpleVar(sym, _) => sym
+     | A.FieldVar (_, sym, _) => sym
+     | A.SubscriptVar (v, _, _) => varsym(v)
 
   fun checkInt ({exp=exp1, ty=T.INT}, {exp=exp2, ty=T.INT}, pos) = ret
     | checkInt ({exp=exp1, ty=T.STRING}, {exp=exp2, ty=T.STRING}, pos) = ret
@@ -48,6 +64,9 @@ struct
 
   fun extractType({exp, ty}) = ty
 
+  fun getName(T.NAME(sym, ref(SOME(ty)))) = getName(ty)
+     | getName (ty) = ty
+
  (**************************************************************************
   *                   TRANSLATING TYPE EXPRESSIONS                         *
   *                                                                        *
@@ -56,8 +75,17 @@ struct
   fun transty (tenv, A.ArrayTy(id, pos)) =
     (case S.look(tenv, id) of
         SOME(ty) => (T.ARRAY(ty, ref ()), pos)
-      | NONE => (error pos("unkown type:" ^ S.name(id)); (T.ARRAY(T.INT, ref ()), pos)))
+      | NONE => (error pos("1unkown type:" ^ S.name(id)); (T.ARRAY(T.INT, ref ()), pos)))
     
+    (*| transty (tenv, A.RecordTy(tfields)) =
+      (case tfields of)
+         nil =>
+      | (tfield::nil)  =>
+      | (tfield::rest) => *)
+    | transty (tenv, A.NameTy(id, pos)) =
+      (case S.look(tenv, id) of
+            SOME(ty) => (T.NAME(id, ref(SOME(ty))), pos)
+          | NONE => (error pos("2unknown type: " ^ S.name(id)); (T.UNIT, pos)))
     | transty (tenv, _ (* other cases *)) = (* ... *) (T.UNIT, 0)
 
   (* ...... *)
@@ -86,7 +114,7 @@ struct
           | g (A.VarExp(var_exp)) = h(var_exp)
           | g (A.StringExp (exp, pos)) = stringReturn()
           | g (A.IntExp (_)) = ret
-          | g (A.SeqExp(nil)) = ret
+          | g (A.SeqExp(nil)) = {exp=(), ty=T.UNIT}
           | g (A.SeqExp((exp, pos)::nil)) = g exp
           | g (A.SeqExp((exp, pos)::rest)) = (g exp; g(A.SeqExp(rest)))
           | g (A.ArrayExp{typ, size, init, pos}) =
@@ -110,8 +138,66 @@ struct
             in
               (transexp(env_, tenv_) body)
             end
-              
-          | g _ (* other cases *) = {exp=(), ty=T.INT} 
+          | g (A.IfExp {test, then', else', pos}) =
+           (if extractType(g(test)) = T.INT then ()
+            else (error pos("first exp of an if must eval to an int"));
+            (case else' of
+                SOME(exp2) =>
+                  let
+                    val then_ty = extractType(g(then'))
+                    val else_ty = extractType(g(exp2))
+                  in
+                    if then_ty = else_ty then {exp=(), ty=then_ty}
+                    else (error pos("then and else exps must return same type"); ret)
+                  end
+              | NONE =>
+                  let
+                    val then_ty = extractType(g(then'))
+                  in
+                    if then_ty = T.UNIT then {exp=(), ty=T.UNIT}
+                    else (error pos("then exp must return UNIT"); ret)
+                  end))
+          | g (A.WhileExp{test, body, pos}) =
+            (if not(extractType(g(test)) = T.INT) then 
+            (error pos("first exp of a while must eval to an int"))
+             else ();
+            loop_level := !loop_level + 1;
+            (let
+               val exp2_ty = extractType(g(body))
+             in
+               if exp2_ty = T.UNIT then ()
+               else (error pos("while exp must return UNIT"))
+             end);
+             loop_level := !loop_level - 1;
+             ret)
+          | g (A.ForExp{var={name, escape}, lo, hi, body, pos}) =
+            (if extractType(g(lo)) = T.INT andalso extractType(g(hi)) = T.INT
+             then ()
+             else (error pos("for ranges must be integers"));
+             forInit(name);
+             (let
+                val body_typ = extractType(transexp(S.enter(env, name, E.VARentry{access=(), ty=extractType(g(lo))}),
+                                                            tenv) body)
+              in
+               if body_typ = T.UNIT then (forDeinit(); {exp=(), ty=T.UNIT})
+                else (forDeinit(); error pos("body of for must return UNIT"); {exp=(), ty=T.UNIT})
+              end)
+            )
+          | g (A.AssignExp{var, exp, pos}) =
+            let
+              val left_ty = extractType(h(var))
+              val right_ty = extractType(g(exp))
+            in
+              if left_ty = right_ty then ()
+              else (error pos("invalid assignment, types must be the same"));
+              if (lookup_loopvar(varsym(var), !loopvars)) then (error pos("cannot assign to loop variable"))
+              else ();
+              retunit
+            end
+          | g (A.BreakExp(pos)) =
+            if !loop_level > 0 then {exp=(), ty=T.UNIT}
+            else (error pos("cannot break if not within a for/while stmt"); retunit)
+          | g _ (* other cases *) = (print("here"); ret)
 
         (* function dealing with "var", may be mutually recursive with g *)
         and h (A.SimpleVar (id,pos)) =
@@ -120,7 +206,7 @@ struct
           in
             case result of
                  SOME(E.VARentry{access=_, ty=ty1}) => {exp=(), ty=ty1}
-               | NONE => (error pos ("cannot find variable" ^ S.name(id)); ret)
+               | NONE => (error pos ("cannot find variable " ^ S.name(id)); ret)
                | _ => (error pos("cannot use function as variable"); ret)
           end
 	  | h (A.FieldVar (v,id,pos)) = (* ... *) {exp=(), ty=T.INT}
@@ -142,13 +228,13 @@ struct
              SOME(sym1, pos1) =>
                (case S.look(tenv, sym1) of
                     SOME(found_typ) =>
-                      if init_type = found_typ
+                      if init_type = getName(found_typ)
                       then
                         (S.enter(env, name, E.VARentry{access=(),
                                                        ty=init_type}),
                                                        tenv)
                       else
-                        (error pos("Conflicting pre-existing type name:" ^ S.name(name));
+                        (print(S.name(sym1)^ "\n");error pos("Conflicting pre-existing type name:" ^ S.name(name));
                         (S.enter(env, name,
                                  E.VARentry{access=(), ty=init_type}), tenv))
                   | NONE => (error pos("Unknown type:" ^ S.name(name));
