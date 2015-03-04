@@ -12,10 +12,14 @@ struct
   structure S = Symbol
   structure T = Types
   val loop_level = ref 0
+  val temp_level = ref 0
   val error = ErrorMsg.error
   type looplist = (A.symbol list) ref
   val loopvars : looplist = ref([])
+  val loopvars_temp : looplist = ref([])
   type ir_code = unit (* not used for the time being *)
+
+  val gt = ref({exp=(), ty=T.UNIT})
 
   
   (*** FILL IN DETAILS OF YOUR TYPE CHECKER PLEASE !!! ***)
@@ -31,7 +35,7 @@ struct
 
   val ret = {exp=(), ty=T.INT}
   val retunit = {exp=(), ty=T.UNIT}
-
+  
   fun forInit(name) = (loop_level := !loop_level + 1; loopvars := name :: !loopvars)
   fun forDeinit() = (loop_level := !loop_level - 1; loopvars := tl(!loopvars))
 
@@ -66,6 +70,7 @@ struct
 
   fun getName(T.NAME(sym, ref(SOME(ty)))) = getName(ty)
      | getName (ty) = ty
+
 
  (**************************************************************************
   *                   TRANSLATING TYPE EXPRESSIONS                         *
@@ -124,7 +129,7 @@ struct
             in
               case lookup of
                 T.ARRAY(arr_type, unique) =>
-                  if arr_type = init_type
+                  if getName(arr_type) = getName(init_type)
                   then
                     if extractType(g(size)) = T.INT
                     then {exp=(), ty=T.ARRAY(arr_type, unique)}
@@ -133,11 +138,17 @@ struct
                 | _ => (error pos("some other array shit"); ret)
             end
           | g (A.LetExp {decs, body, pos}) =
-            let
+           ((*temp_level := !loop_level;
+            loop_level := 0; *)
+            loopvars_temp := !loopvars;
+            loopvars := nil;
+            (let
               val (env_, tenv_) = transdecs(env, tenv, decs)
             in
-              (transexp(env_, tenv_) body)
-            end
+               ((*loop_level := !temp_level; *)
+               gt := transexp(env_, tenv_) body;
+               loopvars := !loopvars_temp)
+            end); !gt)
           | g (A.IfExp {test, then', else', pos}) =
            (if extractType(g(test)) = T.INT then ()
             else (error pos("first exp of an if must eval to an int"));
@@ -210,8 +221,15 @@ struct
                | _ => (error pos("cannot use function as variable"); ret)
           end
 	  | h (A.FieldVar (v,id,pos)) = (* ... *) {exp=(), ty=T.INT}
-	  | h (A.SubscriptVar (v,exp,pos)) = (* ... *) {exp=(), ty=T.INT}
-
+	  | h (A.SubscriptVar (v,exp,pos)) =
+        (case h(v) of
+          {exp=e, ty=T.ARRAY(typ, u)} =>
+            if extractType(g(exp)) = T.INT then ()
+            else error pos("array subscript must be of type int")
+        | _  => (if extractType(g(exp)) = T.INT then ()
+                 else error pos("array subscript must be of type int"); 
+                 (error pos("trying to access a simple var as an array")));
+         ret)
      in g expr
     end
 
