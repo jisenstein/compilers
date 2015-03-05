@@ -30,6 +30,19 @@ struct
 
   (* ...... *)
 
+
+  fun printType(T.NIL) = "NIL"
+    | printType(T.INT) = "INT"
+    | printType(T.UNIT) = "UNIT"
+    | printType(T.STRING) = "STRING"
+    | printType(T.NAME(x,_)) = ("NAME: " ^ S.name(x))
+    | printType(T.ARRAY(x,_)) = ("ARRAY: " ^ printType(x))
+    | printType(T.RECORD(x,_)) = ("RECORD: ")
+
+  fun sameListLength(l1, l2) =
+    if List.length(l1) = List.length(l2) then true else false
+
+  
   fun lookup_loopvar (key: A.symbol, nil) = false
       | lookup_loopvar (key: A.symbol, x::rest) = if key = x then true else lookup_loopvar(key, rest)
 
@@ -49,7 +62,7 @@ struct
     | checkInt ({exp=exp1, ty=T.STRING}, {exp=exp2, ty=T.STRING}, pos) = ret
     | checkInt ({exp=_, ty=_}, {exp=_, ty=_}, pos) = (error pos ("must use type int"); ret)
 
-  fun checkNeqEq ({exp=exp1, ty=T.INT}, {exp=exp2, ty=T.INT}, pos) = (print("josh\n"); ret)
+  fun checkNeqEq ({exp=exp1, ty=T.INT}, {exp=exp2, ty=T.INT}, pos) = ret
     | checkNeqEq ({exp=exp1, ty=T.STRING}, {exp=exp2, ty=T.STRING}, pos) = ret
     | checkNeqEq ({exp=exp1, ty=T.RECORD(r, unique)}, {exp=exp2, ty=T.NIL}, pos) = ret
     | checkNeqEq ({exp=exp1, ty=T.NIL}, {exp=exp2, ty=T.RECORD(r, unique)}, pos) = ret
@@ -62,6 +75,18 @@ struct
     | checkNeqEq ({exp=exp1, ty=_}, {exp=exp2, ty=_}, pos) =
        (error pos("illegal types for eq/neq comparison"); ret)
 
+fun   boolTypes (T.INT, T.INT) = true
+    | boolTypes (T.STRING, T.STRING) = true
+    | boolTypes (T.RECORD(r, unique), T.NIL) = true
+    | boolTypes (T.NIL, T.RECORD(r, unique)) = true
+    | boolTypes (T.ARRAY(a1, unique1), T.ARRAY(a2, unique2)) =
+        if unique1 = unique2 then true
+        else false
+    | boolTypes (T.RECORD(r1, unique1), T.RECORD(r2, unique2)) =
+        if unique1 = unique2 then true
+        else false
+    | boolTypes (_, _) = false
+
   fun debug(pos) = (error pos("geeds r u"); ret)
 
   fun stringReturn() = {exp=(), ty=T.STRING}
@@ -70,7 +95,6 @@ struct
 
   fun getName(T.NAME(sym, ref(SOME(ty)))) = getName(ty)
      | getName (ty) = ty
-
 
  (**************************************************************************
   *                   TRANSLATING TYPE EXPRESSIONS                         *
@@ -91,7 +115,45 @@ struct
       (case S.look(tenv, id) of
             SOME(ty) => (T.NAME(id, ref(SOME(ty))), pos)
           | NONE => (error pos("2unknown type: " ^ S.name(id)); (T.UNIT, pos)))
-    | transty (tenv, _ (* other cases *)) = (* ... *) (T.UNIT, 0)
+    | transty (tenv, A.RecordTy(nil)) = (T.RECORD(nil, ref ()), 0)
+    | transty (tenv, A.RecordTy({name, typ, pos}::rest)) =
+      (checkForDups({name=name, typ=typ, pos=pos}::rest, nil);
+       (T.RECORD(consRecordPairs({name=name, typ=typ, pos=pos}::rest, tenv), ref ()), 0)
+      )
+    (*| transty (tenv, A.RecordTy(tfields)) =
+      (case tfields of
+        {name, typ, pos}::rest =>
+            (checkForDups({name=name, typ=typ, pos=pos}::rest, nil);
+            (T.RECORD(consRecordPairs({name=name, typ=typ, pos=pos}::rest,
+            * tenv) ref ()), 0))
+       | nil => (T.RECORD(nil, ref ()), 0)
+      ) *)
+
+  and checkForDups({name, typ, pos}::rest, seenSoFar) =
+   (if (checkItemList(name, seenSoFar)) then ()
+    else error pos("duplicate item: " ^ S.name(name));
+    checkForDups(rest, name::seenSoFar))
+  | checkForDups(nil, seenSoFar) = ()
+
+  and checkItemList(item:S.symbol, x::rest) =
+     if item = x then false else checkItemList(item, rest)
+     | checkItemList(item:S.symbol, nil) = true
+
+  and consRecordPairs({name, typ, pos}::rest, tenv) =
+    (case S.look(tenv, typ) of
+      SOME(found_typ) => (name, getName(found_typ))::consRecordPairs(rest, tenv)
+        | NONE => (error pos("undefined type"); (name, T.UNIT)::consRecordPairs(rest, tenv))
+    )
+  | consRecordPairs(nil, tenv) = []
+
+
+
+  (*and consRecordPairs(tenv, {name, typ, pos}::rest) =
+    (case S.look(tenv, typ) of
+     SOME(t) => (name, getName(t))::consRecordPairs(tenv, rest)
+   | NONE => (error pos("Undefined type");
+              (name, T.UNIT)::consRecordPairs(tenv, rest)))
+  | consRecordPairs(tenv, nil) = [] *)
 
   (* ...... *)
 
@@ -113,15 +175,28 @@ struct
           | g (A.OpExp {left,oper,right,pos}) =
 		           checkInt(g left, g right, pos)
 
-          | g (A.RecordExp {typ,fields,pos}) =
-                   (* ... *) {exp=(), ty=T.RECORD ((* ? *) [], ref ())}
+          (*| g (A.RecordExp {typ,fields,pos}) =
+                   (* ... *) {exp=(), ty=T.RECORD ((* ? *) [], ref ())} *)
 
           | g (A.VarExp(var_exp)) = h(var_exp)
           | g (A.StringExp (exp, pos)) = stringReturn()
           | g (A.IntExp (_)) = ret
+          | g (A.NilExp) = {exp=(), ty=T.NIL}
           | g (A.SeqExp(nil)) = {exp=(), ty=T.UNIT}
           | g (A.SeqExp((exp, pos)::nil)) = g exp
           | g (A.SeqExp((exp, pos)::rest)) = (g exp; g(A.SeqExp(rest)))
+          | g (A.RecordExp{fields, typ, pos}) =
+              (case getName(getOpt(S.look(tenv, typ), T.NIL)) of
+                T.RECORD(found_pairs, unique) =>
+                  (if (not( sameListLength(found_pairs, fields))) then ret
+                   else (
+                          compNames(fields, found_pairs);
+                          compTypes(fields, found_pairs);
+                          {exp=(), ty=T.RECORD(found_pairs, unique)}
+                        )
+                  )
+                | _ => (error pos("undefined record type"); ret)
+              )
           | g (A.ArrayExp{typ, size, init, pos}) =
             let
               val lookup = getOpt(S.look(tenv, typ), T.NIL)
@@ -210,6 +285,24 @@ struct
             else (error pos("cannot break if not within a for/while stmt"); retunit)
           | g _ (* other cases *) = (print("here"); ret)
 
+       and compNames((sym, exp, pos)::rest1, (master, typ)::rest2) =
+            if sym = master then compNames(rest1, rest2)
+            else (error pos ("Record field is " ^ S.name(sym) ^ " should be " ^ S.name(master));
+                  compNames(rest1, rest2))
+          | compNames(nil, nil) = ()
+          | compNames _  = ()
+
+      and compTypes((sym1, exp, pos)::rest1, (sym2, master_typ)::rest2) =
+          let
+            val new_type = extractType(g(exp))
+          in
+            if getName(new_type) = getName(master_typ) then compTypes(rest1, rest2)
+            else (error pos("Record type field mismatch. between " ^ S.name(sym1) ^ " and master: " ^ S.name(sym2));
+                  compTypes(rest1, rest2))
+          end
+        | compTypes(nil, nil) = ()
+        | compTypes _ = ()
+
         (* function dealing with "var", may be mutually recursive with g *)
         and h (A.SimpleVar (id,pos)) =
           let
@@ -246,13 +339,15 @@ struct
              SOME(sym1, pos1) =>
                (case S.look(tenv, sym1) of
                     SOME(found_typ) =>
-                      if init_type = getName(found_typ)
+                      if boolTypes(getName(init_type), getName(found_typ))
+
                       then
                         (S.enter(env, name, E.VARentry{access=(),
-                                                       ty=init_type}),
+                                                       ty=found_typ}),
                                                        tenv)
                       else
-                        (print(S.name(sym1)^ "\n");error pos("Conflicting pre-existing type name:" ^ S.name(name));
+                        (error pos("josh" ^ printType(init_type) ^
+                        printType(found_typ) ^ "\n"); error pos("Conflicting pre-existing type name:" ^ S.name(name));
                         (S.enter(env, name,
                                  E.VARentry{access=(), ty=init_type}), tenv))
                   | NONE => (error pos("Unknown type:" ^ S.name(name));
