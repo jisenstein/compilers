@@ -102,17 +102,17 @@ fun   boolTypes (T.INT, T.INT) = true
     case S.look(tenv, typ) of
          SOME(typ) => getName(typ)
        | NONE => (error pos("Undefined type: " ^ S.name(typ)); T.INT)
-  
-  fun makeTypeList(tenv, {var, typ, pos}::rest) =
-    typeLookup(tenv, pos, typ)::makeTypeList(tenv, rest)
-    | makeTypeList(tenv, nil) = []
-  
-  fun checkForParamDups({var={name, escape}, typ, pos}::rest, seenSoFar) =
-   (if (funcCheckItemList(name, seenSoFar)) then ()
-    else error pos("function: duplicate item: " ^ S.name(name));
-    checkForParamDups(rest, name::seenSoFar))
-  | checkForParamDups(nil, seenSoFar) = ()
  
+  fun makeNameList({var={name, escape}, typ, pos}::rest) =
+    name::makeNameList(rest)
+  | makeNameList (nil) = nil
+
+  fun makeTypeList(tenv, {var={name, escape}, typ, pos}::rest, names) =
+    if not(funcCheckItemList(name, tl(names))) then
+      typeLookup(tenv, pos, typ)::makeTypeList(tenv, rest, tl(names))
+    else makeTypeList(tenv, rest, tl(names))
+    | makeTypeList(tenv, nil, names) = []
+   
   and funcCheckItemList(item:S.symbol, x::rest) =
      if item = x then false else funcCheckItemList(item, rest)
      | funcCheckItemList(item:S.symbol, nil) = true
@@ -125,6 +125,7 @@ fun   boolTypes (T.INT, T.INT) = true
     end
   | createFuncEnv(nil, env, tenv) = env
 
+  
 
  (**************************************************************************
   *                   TRANSLATING TYPE EXPRESSIONS                         *
@@ -172,7 +173,7 @@ fun   boolTypes (T.INT, T.INT) = true
   and consRecordPairs({name, typ, pos}::rest, tenv) =
     (case S.look(tenv, typ) of
       SOME(found_typ) => (name, getName(found_typ))::consRecordPairs(rest, tenv)
-        | NONE => (error pos("undefined type"); (name, T.UNIT)::consRecordPairs(rest, tenv))
+        | NONE => (error pos("undefined type " ^ S.name(typ)); (name, T.UNIT)::consRecordPairs(rest, tenv))
     )
   | consRecordPairs(nil, tenv) = []
 
@@ -205,9 +206,6 @@ fun   boolTypes (T.INT, T.INT) = true
           | g (A.OpExp {left,oper,right,pos}) =
 		           checkInt(g left, g right, pos)
 
-          (*| g (A.RecordExp {typ,fields,pos}) =
-                   (* ... *) {exp=(), ty=T.RECORD ((* ? *) [], ref ())} *)
-
           | g (A.VarExp(var_exp)) = h(var_exp)
           | g (A.StringExp (exp, pos)) = stringReturn()
           | g (A.IntExp (_)) = ret
@@ -215,7 +213,6 @@ fun   boolTypes (T.INT, T.INT) = true
           | g (A.SeqExp(nil)) = {exp=(), ty=T.UNIT}
           | g (A.SeqExp((exp, pos)::nil)) = g exp
           | g (A.SeqExp((exp, pos)::rest)) = (g exp; g(A.SeqExp(rest)))
-          | g (A.AppExp{func, args, pos}) =  {exp=(), ty=T.UNIT}
           | g (A.RecordExp{fields, typ, pos}) =
               (case getName(getOpt(S.look(tenv, typ), T.NIL)) of
                 T.RECORD(found_pairs, unique) =>
@@ -255,6 +252,16 @@ fun   boolTypes (T.INT, T.INT) = true
                gt := transexp(env_, tenv_) body;
                loopvars := !loopvars_temp)
             end); !gt)
+          | g (A.AppExp{func, args, pos}) =
+            (case S.look(env, func) of
+              SOME(E.FUNentry{level, label, formals, result}) =>
+              (verifyFuncParams(formals, args, pos);
+               {exp=(), ty=getName(result)})
+            | SOME(E.VARentry{access, ty}) =>
+                (error pos("calling a var as a function"); retunit)
+            | NONE => 
+                (error pos ("calling an undefined function"); retunit)
+                )
           | g (A.IfExp {test, then', else', pos}) =
            (if extractType(g(test)) = T.INT then ()
             else (error pos("first exp of an if must eval to an int"));
@@ -314,7 +321,6 @@ fun   boolTypes (T.INT, T.INT) = true
           | g (A.BreakExp(pos)) =
             if !loop_level > 0 then {exp=(), ty=T.UNIT}
             else (error pos("cannot break if not within a for/while stmt"); retunit)
-          | g _ (* other cases *) =  ret
 
        and compNames((sym, exp, pos)::rest1, (master, typ)::rest2) =
             if sym = master then compNames(rest1, rest2)
@@ -354,6 +360,15 @@ fun   boolTypes (T.INT, T.INT) = true
                  else error pos("array subscript must be of type int"); 
                  (error pos("trying to access a simple var as an array")));
          ret)
+     
+         (* todo: check list lengths? *)
+      and verifyFuncParams((ty)::rest1, (exp)::rest2, pos) =
+        if (getName(extractType(g(exp))) =
+            getName(ty)) then verifyFuncParams(rest1, rest2, pos)
+        else (error pos("mismatched types in function parameters");
+              verifyFuncParams(rest1, rest2, pos))
+     | verifyFuncParams _ = ()
+
      in g expr
     end
 
@@ -396,15 +411,14 @@ fun   boolTypes (T.INT, T.INT) = true
       (temp_level := !loop_level;
        loop_level := 0;
       let
-        val formals = makeTypeList(tenv, params)
+        val formals = makeTypeList(tenv, params, makeNameList(params))
         val new_env =createFuncEnv(params, env, tenv)
         val body_type = extractType(transexp(new_env, tenv) body)
       in
         (loop_level := !temp_level;
-        checkForParamDups(params, nil);
         (case result of
            SOME(sym, pos) =>
-            if (getName(typeLookup(tenv, pos, sym)) = getName(body_type))
+            if boolTypes(getName(typeLookup(tenv, pos, sym)), getName(body_type))
             then
               transdec(S.enter(env, name, E.FUNentry{level=(), label=(),
                                                         formals=formals,
@@ -437,11 +451,55 @@ fun   boolTypes (T.INT, T.INT) = true
       end
     | transdec (env, tenv, A.TypeDec(nil)) = (env, tenv)
 
+  and recursiveHandler (A.VarDec{var, typ, init, pos}, env, tenv, _,_) = (env, tenv)
+  | recursiveHandler (A.FunctionDec(nil), env, tenv, temp_env, temp_tenv) = (env, tenv)
+  | recursiveHandler (A.FunctionDec({name, params, body, result, pos}::rest), env, tenv, temp_env, temp_tenv) =
+    (case result of
+       SOME(sym, pos) =>
+         (case S.look(temp_env, name) of
+           SOME(value) => error pos ("Redefining function: " ^ S.name(name))
+          | NONE => ();
+          let
+            val func_entry = E.FUNentry{level=(), label=(),
+                                       formals=makeTypeList(tenv, params, makeNameList(params)),
+                                       result=typeLookup(tenv, pos, sym)};
+          in
+           recursiveHandler(A.FunctionDec(rest), S.enter(env, name, func_entry),
+                            tenv, S.enter(temp_env, name, func_entry), temp_tenv)
+          end
+         )
+     | NONE =>
+         (case S.look(temp_env, name) of
+           SOME(value) => (error pos ("Redefining function: " ^ S.name(name)))
+         | NONE => ();
+         let
+         val func_entry = E.FUNentry{level=(), label=(), formals=makeTypeList(tenv,
+                                     params, makeNameList(params)),
+                                     result=T.UNIT};
+         in
+         recursiveHandler(A.FunctionDec(rest), S.enter(env, name, func_entry),
+                          tenv, S.enter(temp_env, name, func_entry), temp_tenv)
+         end)
+    )
+  | recursiveHandler (A.TypeDec(nil), env, tenv, temp_env, temp_tenv) = (env, tenv)
+  | recursiveHandler (A.TypeDec({name, ty, pos}::rest), env, tenv, temp_env, temp_tenv) =
+    (case S.look(temp_tenv, name) of
+       SOME(value) => error pos ("Redefining type: " ^ S.name(name))
+      | NONE => ();
+      let
+        val type_entry = T.NAME(name, ref(NONE))
+      in
+        recursiveHandler(A.TypeDec(rest), env, S.enter(tenv, name, type_entry),
+        temp_env, S.enter(temp_tenv, name, type_entry))
+      end
+    )
+
 
   (*** transdecs : (E.env * E.tenv * A.dec list) -> (E.env * E.tenv) ***)
   and transdecs (env,tenv,nil) = (env, tenv)
     | transdecs (env,tenv,dec::decs) =
-	let val (env',tenv') = transdec (env,tenv,dec)
+    let val (mut_env, mut_tenv) = recursiveHandler(dec, env, tenv, S.empty, S.empty)
+	val (env',tenv') = transdec (mut_env,mut_tenv,dec)
  	 in transdecs (env',tenv',decs)
 	end
 

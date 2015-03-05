@@ -61,7 +61,7 @@ struct
                                                   result=T.STRING});
                    val new_env = S.enter(new_env, sym("ord"),
                                          FUNentry{level=(), label=(),
-                                                  formals=T.INT::nil,
+                                                  formals=T.STRING::nil,
                                                   result=T.INT});
                    val new_env = S.enter(new_env, sym("chr"),
                                          FUNentry{level=(), label=(),
