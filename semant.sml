@@ -43,6 +43,8 @@ struct
     if List.length(l1) = List.length(l2) then true else false
 
   
+
+
   fun lookup_loopvar (key: A.symbol, nil) = false
       | lookup_loopvar (key: A.symbol, x::rest) = if key = x then true else lookup_loopvar(key, rest)
 
@@ -95,6 +97,34 @@ fun   boolTypes (T.INT, T.INT) = true
 
   fun getName(T.NAME(sym, ref(SOME(ty)))) = getName(ty)
      | getName (ty) = ty
+  
+  fun typeLookup(tenv, pos, typ) =
+    case S.look(tenv, typ) of
+         SOME(typ) => getName(typ)
+       | NONE => (error pos("Undefined type: " ^ S.name(typ)); T.INT)
+  
+  fun makeTypeList(tenv, {var, typ, pos}::rest) =
+    typeLookup(tenv, pos, typ)::makeTypeList(tenv, rest)
+    | makeTypeList(tenv, nil) = []
+  
+  fun checkForParamDups({var={name, escape}, typ, pos}::rest, seenSoFar) =
+   (if (funcCheckItemList(name, seenSoFar)) then ()
+    else error pos("function: duplicate item: " ^ S.name(name));
+    checkForParamDups(rest, name::seenSoFar))
+  | checkForParamDups(nil, seenSoFar) = ()
+ 
+  and funcCheckItemList(item:S.symbol, x::rest) =
+     if item = x then false else funcCheckItemList(item, rest)
+     | funcCheckItemList(item:S.symbol, nil) = true
+
+  fun createFuncEnv({var={name, escape}, typ, pos}::rest, env, tenv) =
+    let
+      val new_type = typeLookup(tenv, pos, typ)
+    in
+      createFuncEnv(rest, S.enter(env, name, E.VARentry{access=(), ty=new_type}), tenv)
+    end
+  | createFuncEnv(nil, env, tenv) = env
+
 
  (**************************************************************************
   *                   TRANSLATING TYPE EXPRESSIONS                         *
@@ -185,6 +215,7 @@ fun   boolTypes (T.INT, T.INT) = true
           | g (A.SeqExp(nil)) = {exp=(), ty=T.UNIT}
           | g (A.SeqExp((exp, pos)::nil)) = g exp
           | g (A.SeqExp((exp, pos)::rest)) = (g exp; g(A.SeqExp(rest)))
+          | g (A.AppExp{func, args, pos}) =  {exp=(), ty=T.UNIT}
           | g (A.RecordExp{fields, typ, pos}) =
               (case getName(getOpt(S.look(tenv, typ), T.NIL)) of
                 T.RECORD(found_pairs, unique) =>
@@ -283,7 +314,7 @@ fun   boolTypes (T.INT, T.INT) = true
           | g (A.BreakExp(pos)) =
             if !loop_level > 0 then {exp=(), ty=T.UNIT}
             else (error pos("cannot break if not within a for/while stmt"); retunit)
-          | g _ (* other cases *) = (print("here"); ret)
+          | g _ (* other cases *) =  ret
 
        and compNames((sym, exp, pos)::rest1, (master, typ)::rest2) =
             if sym = master then compNames(rest1, rest2)
@@ -340,14 +371,12 @@ fun   boolTypes (T.INT, T.INT) = true
                (case S.look(tenv, sym1) of
                     SOME(found_typ) =>
                       if boolTypes(getName(init_type), getName(found_typ))
-
                       then
                         (S.enter(env, name, E.VARentry{access=(),
                                                        ty=found_typ}),
                                                        tenv)
                       else
-                        (error pos("josh" ^ printType(init_type) ^
-                        printType(found_typ) ^ "\n"); error pos("Conflicting pre-existing type name:" ^ S.name(name));
+                        (error pos("Conflicting pre-existing type name:" ^ S.name(name));
                         (S.enter(env, name,
                                  E.VARentry{access=(), ty=init_type}), tenv))
                   | NONE => (error pos("Unknown type:" ^ S.name(name));
@@ -363,7 +392,42 @@ fun   boolTypes (T.INT, T.INT) = true
                 | t => (S.enter(env, name,
                                 E.VARentry{access=(), ty=init_type}), tenv))
     end
-    | transdec (env, tenv, A.FunctionDec(declist)) = (* ... *) (env, tenv)
+    | transdec (env, tenv, A.FunctionDec({name, params, result, body, pos}::rest)) = 
+      (temp_level := !loop_level;
+       loop_level := 0;
+      let
+        val formals = makeTypeList(tenv, params)
+        val new_env =createFuncEnv(params, env, tenv)
+        val body_type = extractType(transexp(new_env, tenv) body)
+      in
+        (loop_level := !temp_level;
+        checkForParamDups(params, nil);
+        (case result of
+           SOME(sym, pos) =>
+            if (getName(typeLookup(tenv, pos, sym)) = getName(body_type))
+            then
+              transdec(S.enter(env, name, E.FUNentry{level=(), label=(),
+                                                        formals=formals,
+                                              result=getName(body_type)}),
+                                                        tenv,
+                                                        A.FunctionDec(rest))
+            else 
+              (error pos("body of a function must return indicated type");
+              transdec(S.enter(env, name, E.FUNentry{level=(), label=(),
+                                                        formals=formals,
+                                              result=typeLookup(tenv,pos,sym)}),
+                                                        tenv,
+                                                        A.FunctionDec(rest)))
+         | NONE =>  
+             (if getName(body_type) = T.UNIT then ()
+             else error pos("Procedure must return type T.UNIT");
+             transdec(S.enter(env, name, E.FUNentry{level=(), label=(),
+                                                    formals=formals,
+                                                    result=T.UNIT}), tenv,
+                                                    A.FunctionDec(rest)))
+        ))
+      end)
+    | transdec (env, tenv, A.FunctionDec(nil)) = (env, tenv)
     | transdec (env, tenv, A.TypeDec({name, ty, pos}::rest)) =
       let
         val (trans, post) = transty(tenv, ty)
