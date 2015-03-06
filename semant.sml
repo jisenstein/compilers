@@ -141,15 +141,14 @@ struct
       createFuncEnv(rest, S.enter(env, name, E.VARentry{access=(), ty=new_type}), tenv)
     end
   | createFuncEnv(nil, env, tenv) = env
+   
+  fun findLoops (T.NAME(sym1, typ1), tenv, master, pos) =
+    if master = sym1 then (error pos("Cyclic types"); true)
+    else (case !typ1
+      of SOME(x) => findLoops(x, tenv,  master, pos)
+        | NONE => false)
+ | findLoops (_, tenv, master, pos) = false
 
-  fun stepThrough(T.NAME(p, ref(SOME(t))), tenv, pos) = t
-    | stepThrough(T.NAME(p, ref(NONE)), tenv, pos) = T.UNIT
-    | stepThrough(t, tenv, pos) = t
-
-  fun detectLoop (T.NAME(s1, x), T.NAME(s2, ref(SOME(t))), tenv, pos) =
-    if s1 = s2 then (error pos ("Cyclical definition"); true)
-    else detectLoop(T.NAME(s1, x), t, tenv, pos)
-  | detectLoop(t1, t2, _, _) = false
 
   fun checkRecExp((sym, t)::xs) =
     (case getName(t) of
@@ -483,18 +482,19 @@ struct
     | transdec (env, tenv, A.TypeDec({name, ty, pos}::rest)) =
       let
         val (trans, post) = transty(tenv, ty)
-        val tenv' = S.enter(tenv, name, trans)
       in
-        (*(case S.look(tenv', name) of
-          SOME(T.NAME(sym,typ)) =>
-            (typ:=SOME(trans);
-             if detectLoop(T.NAME(sym,typ),
-                           stepThrough(T.NAME(sym,typ), tenv,pos),
-                           tenv, pos)
-             then typ:= SOME(T.INT) else ();*)
+        if findLoops(trans, tenv, name, pos) then 
+          let
+            val tenv' = S.enter(tenv, name, T.INT)
+          in
              transdec(env, tenv', A.TypeDec(rest))
-
-        (*| _ => (env, tenv))*)
+          end
+         else
+           let
+             val tenv' = S.enter(tenv, name, trans)
+           in
+             transdec(env, tenv', A.TypeDec(rest))
+           end
       end
     | transdec (env, tenv, A.TypeDec(nil)) = (env, tenv)
 
