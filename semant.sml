@@ -12,6 +12,7 @@ struct
   structure S = Symbol
   structure T = Types
   val loop_level = ref 0
+  val hack = ref 0
   val temp_level = ref 0
   val error = ErrorMsg.error
   type looplist = (A.symbol list) ref
@@ -30,19 +31,27 @@ struct
 
   (* ...... *)
 
+  fun printRecordFields((x,y)::rest) = printType(y) ^ printRecordFields(rest)
+    | printRecordFields(nil) = ""
 
-  fun printType(T.NIL) = "NIL"
+  and printType(T.NIL) = "NIL"
     | printType(T.INT) = "INT"
     | printType(T.UNIT) = "UNIT"
     | printType(T.STRING) = "STRING"
     | printType(T.NAME(x,_)) = ("NAME: " ^ S.name(x))
     | printType(T.ARRAY(x,_)) = ("ARRAY: " ^ printType(x))
-    | printType(T.RECORD(x,_)) = ("RECORD: ")
+    | printType(T.RECORD(x,_)) = ("RECORD: " ^ printRecordFields(x))
+ and printTYPE (t) = print(printType(t) ^ "\n")
+
+  fun symName(T.NAME(x,_)) = x
+    | symName(_) = S.symbol("fuck")
 
   fun sameListLength(l1, l2) =
     if List.length(l1) = List.length(l2) then true else false
 
-  
+  fun findInRecord((sym, ty)::rest, id, pos) = if S.name(id) = S.name(sym) then
+    ty else findInRecord(rest, id, pos)
+    | findInRecord(nil, id, pos) = (error pos (S.name(id) ^" does not exist in record"); T.INT)
 
 
   fun lookup_loopvar (key: A.symbol, nil) = false
@@ -95,8 +104,8 @@ fun   boolTypes (T.INT, T.INT) = true
 
   fun extractType({exp, ty}) = ty
 
-  fun getName(T.NAME(sym, ref(SOME(ty)))) = getName(ty)
-     | getName (ty) = ty
+  fun getName(T.NAME(sym, ref(SOME(t)))) = getName(t)
+     | getName (t) = t
   
   fun typeLookup(tenv, pos, typ) =
     case S.look(tenv, typ) of
@@ -125,7 +134,21 @@ fun   boolTypes (T.INT, T.INT) = true
     end
   | createFuncEnv(nil, env, tenv) = env
 
-  
+  fun stepThrough(T.NAME(p, ref(SOME(t))), tenv, pos) = t
+    | stepThrough(T.NAME(p, ref(NONE)), tenv, pos) = T.UNIT
+    | stepThrough(t, tenv, pos) = t
+
+  fun detectLoop (T.NAME(s1, x), T.NAME(s2, ref(SOME(t))), tenv, pos) =
+    if s1 = s2 then (error pos ("Cyclical definition"); true)
+    else detectLoop(T.NAME(s1, x), t, tenv, pos)
+  | detectLoop(t1, t2, _, _) = false
+
+  fun checkRecExp((sym, t)::xs) =
+    (case getName(t) of
+      T.NAME(_, _) => true 
+    | _ => checkRecExp(xs)
+    )
+ | checkRecExp(nil) = false
 
  (**************************************************************************
   *                   TRANSLATING TYPE EXPRESSIONS                         *
@@ -146,11 +169,11 @@ fun   boolTypes (T.INT, T.INT) = true
       (case S.look(tenv, id) of
             SOME(ty) => (T.NAME(id, ref(SOME(ty))), pos)
           | NONE => (error pos("2unknown type: " ^ S.name(id)); (T.UNIT, pos)))
-    | transty (tenv, A.RecordTy(nil)) = (T.RECORD(nil, ref ()), 0)
     | transty (tenv, A.RecordTy({name, typ, pos}::rest)) =
       (checkForDups({name=name, typ=typ, pos=pos}::rest, nil);
-       (T.RECORD(consRecordPairs({name=name, typ=typ, pos=pos}::rest, tenv), ref ()), 0)
+       (T.RECORD(consRecordPairs({name=name, typ=typ, pos=pos}::rest, tenv), ref ()), pos)
       )
+    | transty (tenv, A.RecordTy(nil)) = (T.RECORD(nil, ref ()), 0)
     (*| transty (tenv, A.RecordTy(tfields)) =
       (case tfields of
         {name, typ, pos}::rest =>
@@ -172,7 +195,7 @@ fun   boolTypes (T.INT, T.INT) = true
 
   and consRecordPairs({name, typ, pos}::rest, tenv) =
     (case S.look(tenv, typ) of
-      SOME(found_typ) => (name, getName(found_typ))::consRecordPairs(rest, tenv)
+      SOME(found_typ) => (name, found_typ)::consRecordPairs(rest, tenv)
         | NONE => (error pos("undefined type " ^ S.name(typ)); (name, T.UNIT)::consRecordPairs(rest, tenv))
     )
   | consRecordPairs(nil, tenv) = []
@@ -216,6 +239,13 @@ fun   boolTypes (T.INT, T.INT) = true
           | g (A.RecordExp{fields, typ, pos}) =
               (case getName(getOpt(S.look(tenv, typ), T.NIL)) of
                 T.RECORD(found_pairs, unique) =>
+                if checkRecExp(found_pairs) then
+                  (print("josh\n");transexp (env, recursiveRecords(found_pairs,
+                  tenv, pos)) expr)
+                else
+                (*T.RECORD(found_pairs, unique) => *)
+                  (*verifyRecordTypes(found_pairs, fields, pos,
+                  T.RECORD(found_pairs, unique))*)
                   (if (not( sameListLength(found_pairs, fields))) then ret
                    else (
                           compNames(fields, found_pairs);
@@ -232,7 +262,8 @@ fun   boolTypes (T.INT, T.INT) = true
             in
               case lookup of
                 T.ARRAY(arr_type, unique) =>
-                  if getName(arr_type) = getName(init_type)
+                  if getName(arr_type) = getName(init_type) orelse
+                     getName(init_type) = T.NIL
                   then
                     if extractType(g(size)) = T.INT
                     then {exp=(), ty=T.ARRAY(arr_type, unique)}
@@ -333,12 +364,38 @@ fun   boolTypes (T.INT, T.INT) = true
           let
             val new_type = extractType(g(exp))
           in
-            if getName(new_type) = getName(master_typ) then compTypes(rest1, rest2)
-            else (error pos("Record type field mismatch. between " ^ S.name(sym1) ^ " and master: " ^ S.name(sym2));
-                  compTypes(rest1, rest2))
+            if boolTypes(getName(new_type) , getName(master_typ)) then compTypes(rest1, rest2)
+            else (
+              (*case S.look(tenv, symName(master_typ)) of
+                SOME(T.RECORD(x, u)) => (error pos(printRecordFields(x)))
+               | NONE => error pos ("fuck me in the dick\n")
+            )*)
+              
+              
+              (error pos("Record type field mismatch. between " ^
+            printType(getName(new_type)) ^ " and master: " ^
+            printType(getName(master_typ)));
+                  compTypes(rest1, rest2)) )
           end
         | compTypes(nil, nil) = ()
         | compTypes _ = ()
+     and verifyRecordTypes((master_sym, master_typ)::rest1,
+                           (sym, exp, pos)::rest2, main_pos, result) =
+         let
+           val new_type = extractType(g(exp))
+         in
+           (if boolTypes(getName(new_type), getName(master_typ)) then ()
+            else (
+            printTYPE(new_type) ; printTYPE(getName(master_typ));
+            error pos ("Record field does not match type!!!"));
+            if (S.name(master_sym) = S.name(sym)) then ()
+            else (error pos ("Record field expected given"));
+            verifyRecordTypes(rest1, rest2, main_pos, result)
+            )
+         end
+      | verifyRecordTypes(nil, nil, main_pos, result) = {exp=(), ty=result}
+      | verifyRecordTypes(_, _, main_pos, result) = 
+            (error main_pos("fields don't match");{exp=(), ty=T.INT})
 
         (* function dealing with "var", may be mutually recursive with g *)
         and h (A.SimpleVar (id,pos)) =
@@ -350,7 +407,11 @@ fun   boolTypes (T.INT, T.INT) = true
                | NONE => (error pos ("cannot find variable " ^ S.name(id)); ret)
                | _ => (error pos("cannot use function as variable"); ret)
           end
-	  | h (A.FieldVar (v,id,pos)) = (* ... *) {exp=(), ty=T.INT}
+	  | h (A.FieldVar (v,id,pos)) =
+         (case h(v) of
+            {exp=e, ty=T.RECORD(r::rest,u)} =>
+            {exp=(), ty=getName(findInRecord(r::rest, id, pos))}
+          | {exp, ty} => (error pos("invalid record type in a fieldvar"); ret))
 	  | h (A.SubscriptVar (v,exp,pos)) =
         (case h(v) of
           {exp=e, ty=T.ARRAY(typ, u)} =>
@@ -491,15 +552,20 @@ fun   boolTypes (T.INT, T.INT) = true
       in
         recursiveHandler(A.TypeDec(rest), env, S.enter(tenv, name, type_entry),
         temp_env, S.enter(temp_tenv, name, type_entry))
-      end
-    )
+      end)
+
+  and recursiveRecords((name,T.NAME(sym, t))::rest, tenv, pos) = (t:= S.look(tenv,sym); 
+                                                                recursiveRecords(rest,tenv,pos))
+    | recursiveRecords((name,ty)::rest, tenv, pos) = recursiveRecords(rest,tenv,pos)
+    | recursiveRecords(nil, tenv, pos) = tenv
 
 
   (*** transdecs : (E.env * E.tenv * A.dec list) -> (E.env * E.tenv) ***)
   and transdecs (env,tenv,nil) = (env, tenv)
     | transdecs (env,tenv,dec::decs) =
-    let val (mut_env, mut_tenv) = recursiveHandler(dec, env, tenv, S.empty, S.empty)
-	val (env',tenv') = transdec (mut_env,mut_tenv,dec)
+    let 
+      val (mut_env, mut_tenv) = recursiveHandler(dec, env, tenv, S.empty, S.empty)
+	val (env',tenv') = transdec (mut_env, mut_tenv, dec)
  	 in transdecs (env',tenv',decs)
 	end
 
