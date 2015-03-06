@@ -29,8 +29,8 @@ struct
    *                       UTILITY FUNCTIONS                               *
    *************************************************************************)
 
-  (* ...... *)
 
+  (* debugging functions *)
   fun printRecordFields((x,y)::rest) = printType(y) ^ printRecordFields(rest)
     | printRecordFields(nil) = ""
 
@@ -41,38 +41,42 @@ struct
     | printType(T.NAME(x,_)) = ("NAME: " ^ S.name(x))
     | printType(T.ARRAY(x,_)) = ("ARRAY: " ^ printType(x))
     | printType(T.RECORD(x,_)) = ("RECORD: " ^ printRecordFields(x))
- and printTYPE (t) = print(printType(t) ^ "\n")
+  and printTYPE (t) = print(printType(t) ^ "\n")
 
-  fun symName(T.NAME(x,_)) = x
-    | symName(_) = S.symbol("fuck")
-
+  (* check for length equality of two lists *)
   fun sameListLength(l1, l2) =
     if List.length(l1) = List.length(l2) then true else false
 
+  (* search for id in record list *)
   fun findInRecord((sym, ty)::rest, id, pos) = if S.name(id) = S.name(sym) then
     ty else findInRecord(rest, id, pos)
     | findInRecord(nil, id, pos) = (error pos (S.name(id) ^" does not exist in record"); T.INT)
 
-
+  (* functions for dealing with loop variable data structure *)
   fun lookup_loopvar (key: A.symbol, nil) = false
       | lookup_loopvar (key: A.symbol, x::rest) = if key = x then true else lookup_loopvar(key, rest)
 
+  (* placeholders for return values *)
   val ret = {exp=(), ty=T.INT}
   val retunit = {exp=(), ty=T.UNIT}
-  
+ 
+  (* macros for depth management in ForExp *)
   fun forInit(name) = (loop_level := !loop_level + 1; loopvars := name :: !loopvars)
   fun forDeinit() = (loop_level := !loop_level - 1; loopvars := tl(!loopvars))
 
+  (* converts variable to symbol *)
   fun varsym(name: A.var) =
     case name of
        A.SimpleVar(sym, _) => sym
      | A.FieldVar (_, sym, _) => sym
      | A.SubscriptVar (v, _, _) => varsym(v)
 
+  (* compares two expressions for comparison equality *)
   fun checkInt ({exp=exp1, ty=T.INT}, {exp=exp2, ty=T.INT}, pos) = ret
     | checkInt ({exp=exp1, ty=T.STRING}, {exp=exp2, ty=T.STRING}, pos) = ret
     | checkInt ({exp=_, ty=_}, {exp=_, ty=_}, pos) = (error pos ("must use type int"); ret)
 
+  (* compares two expression types for legality of comparison *)
   fun checkNeqEq ({exp=exp1, ty=T.INT}, {exp=exp2, ty=T.INT}, pos) = ret
     | checkNeqEq ({exp=exp1, ty=T.STRING}, {exp=exp2, ty=T.STRING}, pos) = ret
     | checkNeqEq ({exp=exp1, ty=T.RECORD(r, unique)}, {exp=exp2, ty=T.NIL}, pos) = ret
@@ -86,7 +90,8 @@ struct
     | checkNeqEq ({exp=exp1, ty=_}, {exp=exp2, ty=_}, pos) =
        (error pos("illegal types for eq/neq comparison"); ret)
 
-fun   boolTypes (T.INT, T.INT) = true
+  (* same as above but returns a boolean instead of a return value *)
+  fun boolTypes (T.INT, T.INT) = true
     | boolTypes (T.STRING, T.STRING) = true
     | boolTypes (T.RECORD(r, unique), T.NIL) = true
     | boolTypes (T.NIL, T.RECORD(r, unique)) = true
@@ -98,34 +103,37 @@ fun   boolTypes (T.INT, T.INT) = true
         else false
     | boolTypes (_, _) = false
 
-  fun debug(pos) = (error pos("geeds r u"); ret)
-
   fun stringReturn() = {exp=(), ty=T.STRING}
 
   fun extractType({exp, ty}) = ty
 
   fun getName(T.NAME(sym, ref(SOME(t)))) = getName(t)
      | getName (t) = t
-  
+
+  (* macro for searching for a type in tenv *)
   fun typeLookup(tenv, pos, typ) =
     case S.look(tenv, typ) of
          SOME(typ) => getName(typ)
        | NONE => (error pos("Undefined type: " ^ S.name(typ)); T.INT)
- 
+
+  (* constructs a list of names declared as function parameters *)
   fun makeNameList({var={name, escape}, typ, pos}::rest) =
     name::makeNameList(rest)
   | makeNameList (nil) = nil
 
+  (* contrsucts a list of types declared as functino parameters *)
   fun makeTypeList(tenv, {var={name, escape}, typ, pos}::rest, names) =
     if not(funcCheckItemList(name, tl(names))) then
       typeLookup(tenv, pos, typ)::makeTypeList(tenv, rest, tl(names))
     else makeTypeList(tenv, rest, tl(names))
     | makeTypeList(tenv, nil, names) = []
-   
+ 
+  (* convert parameters to formals for function decs *)
   and funcCheckItemList(item:S.symbol, x::rest) =
      if item = x then false else funcCheckItemList(item, rest)
      | funcCheckItemList(item:S.symbol, nil) = true
 
+  (* creates temp environment to use when type checking function contents *)
   fun createFuncEnv({var={name, escape}, typ, pos}::rest, env, tenv) =
     let
       val new_type = typeLookup(tenv, pos, typ)
@@ -160,12 +168,7 @@ fun   boolTypes (T.INT, T.INT) = true
         SOME(ty) => (T.ARRAY(ty, ref ()), pos)
       | NONE => (error pos("1unkown type:" ^ S.name(id)); (T.ARRAY(T.INT, ref ()), pos)))
     
-    (*| transty (tenv, A.RecordTy(tfields)) =
-      (case tfields of)
-         nil =>
-      | (tfield::nil)  =>
-      | (tfield::rest) => *)
-    | transty (tenv, A.NameTy(id, pos)) =
+      | transty (tenv, A.NameTy(id, pos)) =
       (case S.look(tenv, id) of
             SOME(ty) => (T.NAME(id, ref(SOME(ty))), pos)
           | NONE => (error pos("2unknown type: " ^ S.name(id)); (T.UNIT, pos)))
@@ -174,14 +177,6 @@ fun   boolTypes (T.INT, T.INT) = true
        (T.RECORD(consRecordPairs({name=name, typ=typ, pos=pos}::rest, tenv), ref ()), pos)
       )
     | transty (tenv, A.RecordTy(nil)) = (T.RECORD(nil, ref ()), 0)
-    (*| transty (tenv, A.RecordTy(tfields)) =
-      (case tfields of
-        {name, typ, pos}::rest =>
-            (checkForDups({name=name, typ=typ, pos=pos}::rest, nil);
-            (T.RECORD(consRecordPairs({name=name, typ=typ, pos=pos}::rest,
-            * tenv) ref ()), 0))
-       | nil => (T.RECORD(nil, ref ()), 0)
-      ) *)
 
   and checkForDups({name, typ, pos}::rest, seenSoFar) =
    (if (checkItemList(name, seenSoFar)) then ()
@@ -199,19 +194,6 @@ fun   boolTypes (T.INT, T.INT) = true
         | NONE => (error pos("undefined type " ^ S.name(typ)); (name, T.UNIT)::consRecordPairs(rest, tenv))
     )
   | consRecordPairs(nil, tenv) = []
-
-
-
-  (*and consRecordPairs(tenv, {name, typ, pos}::rest) =
-    (case S.look(tenv, typ) of
-     SOME(t) => (name, getName(t))::consRecordPairs(tenv, rest)
-   | NONE => (error pos("Undefined type");
-              (name, T.UNIT)::consRecordPairs(tenv, rest)))
-  | consRecordPairs(tenv, nil) = [] *)
-
-  (* ...... *)
-
-
 
 
  (**************************************************************************
@@ -240,19 +222,16 @@ fun   boolTypes (T.INT, T.INT) = true
               (case getName(getOpt(S.look(tenv, typ), T.NIL)) of
                 T.RECORD(found_pairs, unique) =>
                 if checkRecExp(found_pairs) then
-                  (print("josh\n");transexp (env, recursiveRecords(found_pairs,
+                  (transexp (env, recursiveRecords(found_pairs,
                   tenv, pos)) expr)
                 else
-                (*T.RECORD(found_pairs, unique) => *)
-                  (*verifyRecordTypes(found_pairs, fields, pos,
-                  T.RECORD(found_pairs, unique))*)
-                  (if (not( sameListLength(found_pairs, fields))) then ret
+                (if (not( sameListLength(found_pairs, fields))) then ret
                    else (
-                          compNames(fields, found_pairs);
-                          compTypes(fields, found_pairs);
+                   if compNames(fields, found_pairs, true) then
+                          compTypes(fields, found_pairs) else ();
                           {exp=(), ty=T.RECORD(found_pairs, unique)}
-                        )
-                  )
+                   )
+                )
                 | _ => (error pos("undefined record type"); ret)
               )
           | g (A.ArrayExp{typ, size, init, pos}) =
@@ -269,18 +248,15 @@ fun   boolTypes (T.INT, T.INT) = true
                     then {exp=(), ty=T.ARRAY(arr_type, unique)}
                     else (error pos("array size must be of type INT"); ret)
                   else (error pos("array types must be the same"); ret)
-                | _ => (error pos("some other array shit"); ret)
+                | _ => (error pos("Type does not match array"); ret)
             end
           | g (A.LetExp {decs, body, pos}) =
-           ((*temp_level := !loop_level;
-            loop_level := 0; *)
-            loopvars_temp := !loopvars;
+           (loopvars_temp := !loopvars;
             loopvars := nil;
             (let
               val (env_, tenv_) = transdecs(env, tenv, decs)
             in
-               ((*loop_level := !temp_level; *)
-               gt := transexp(env_, tenv_) body;
+               (gt := transexp(env_, tenv_) body;
                loopvars := !loopvars_temp)
             end); !gt)
           | g (A.AppExp{func, args, pos}) =
@@ -302,7 +278,9 @@ fun   boolTypes (T.INT, T.INT) = true
                     val then_ty = extractType(g(then'))
                     val else_ty = extractType(g(exp2))
                   in
-                    if then_ty = else_ty then {exp=(), ty=then_ty}
+                    if then_ty = else_ty orelse
+                       else_ty = T.NIL
+                    then {exp=(), ty=then_ty}
                     else (error pos("then and else exps must return same type"); ret)
                   end
               | NONE =>
@@ -324,15 +302,16 @@ fun   boolTypes (T.INT, T.INT) = true
                else (error pos("while exp must return UNIT"))
              end);
              loop_level := !loop_level - 1;
-             ret)
+             retunit)
           | g (A.ForExp{var={name, escape}, lo, hi, body, pos}) =
             (if extractType(g(lo)) = T.INT andalso extractType(g(hi)) = T.INT
              then ()
              else (error pos("for ranges must be integers"));
              forInit(name);
              (let
-                val body_typ = extractType(transexp(S.enter(env, name, E.VARentry{access=(), ty=extractType(g(lo))}),
-                                                            tenv) body)
+                val body_typ = extractType(transexp(S.enter(env, name,
+                                           E.VARentry{access=(), ty=extractType(g(lo))}),
+                                                      tenv) body)
               in
                if body_typ = T.UNIT then (forDeinit(); {exp=(), ty=T.UNIT})
                 else (forDeinit(); error pos("body of for must return UNIT"); {exp=(), ty=T.UNIT})
@@ -343,9 +322,10 @@ fun   boolTypes (T.INT, T.INT) = true
               val left_ty = extractType(h(var))
               val right_ty = extractType(g(exp))
             in
-              if left_ty = right_ty then ()
+              if boolTypes(getName(left_ty), getName(right_ty)) then ()
               else (error pos("invalid assignment, types must be the same"));
-              if (lookup_loopvar(varsym(var), !loopvars)) then (error pos("cannot assign to loop variable"))
+              if (lookup_loopvar(varsym(var), !loopvars))
+              then (error pos("cannot assign to loop variable"))
               else ();
               retunit
             end
@@ -353,25 +333,21 @@ fun   boolTypes (T.INT, T.INT) = true
             if !loop_level > 0 then {exp=(), ty=T.UNIT}
             else (error pos("cannot break if not within a for/while stmt"); retunit)
 
-       and compNames((sym, exp, pos)::rest1, (master, typ)::rest2) =
-            if sym = master then compNames(rest1, rest2)
+       (* compare a list of names in a record creation *)
+       and compNames((sym, exp, pos)::rest1, (master, typ)::rest2, flag) =
+            if sym = master then compNames(rest1, rest2, flag)
             else (error pos ("Record field is " ^ S.name(sym) ^ " should be " ^ S.name(master));
-                  compNames(rest1, rest2))
-          | compNames(nil, nil) = ()
-          | compNames _  = ()
+                  compNames(rest1, rest2, false))
+          | compNames(nil, nil, flag) = flag
+          | compNames (_,_,flag)  = flag
 
+      (* compare a list of types in a record creation *)
       and compTypes((sym1, exp, pos)::rest1, (sym2, master_typ)::rest2) =
           let
             val new_type = extractType(g(exp))
           in
             if boolTypes(getName(new_type) , getName(master_typ)) then compTypes(rest1, rest2)
             else (
-              (*case S.look(tenv, symName(master_typ)) of
-                SOME(T.RECORD(x, u)) => (error pos(printRecordFields(x)))
-               | NONE => error pos ("fuck me in the dick\n")
-            )*)
-              
-              
               (error pos("Record type field mismatch. between " ^
             printType(getName(new_type)) ^ " and master: " ^
             printType(getName(master_typ)));
@@ -379,6 +355,7 @@ fun   boolTypes (T.INT, T.INT) = true
           end
         | compTypes(nil, nil) = ()
         | compTypes _ = ()
+
      and verifyRecordTypes((master_sym, master_typ)::rest1,
                            (sym, exp, pos)::rest2, main_pos, result) =
          let
@@ -415,14 +392,13 @@ fun   boolTypes (T.INT, T.INT) = true
 	  | h (A.SubscriptVar (v,exp,pos)) =
         (case h(v) of
           {exp=e, ty=T.ARRAY(typ, u)} =>
-            if extractType(g(exp)) = T.INT then ()
-            else error pos("array subscript must be of type int")
+            if extractType(g(exp)) = T.INT then {exp=(), ty=getName(typ)}
+            else (error pos("array subscript must be of type int"); ret)
         | _  => (if extractType(g(exp)) = T.INT then ()
                  else error pos("array subscript must be of type int"); 
-                 (error pos("trying to access a simple var as an array")));
-         ret)
+                 (error pos("trying to access a simple var as an array"));
+                 ret))
      
-         (* todo: check list lengths? *)
       and verifyFuncParams((ty)::rest1, (exp)::rest2, pos) =
         if (getName(extractType(g(exp))) =
             getName(ty)) then verifyFuncParams(rest1, rest2, pos)
@@ -495,7 +471,8 @@ fun   boolTypes (T.INT, T.INT) = true
                                                         A.FunctionDec(rest)))
          | NONE =>  
              (if getName(body_type) = T.UNIT then ()
-             else error pos("Procedure must return type T.UNIT");
+             else error pos("Procedure must return type T.UNIT instead of "^
+             printType(body_type));
              transdec(S.enter(env, name, E.FUNentry{level=(), label=(),
                                                     formals=formals,
                                                     result=T.UNIT}), tenv,
@@ -508,7 +485,16 @@ fun   boolTypes (T.INT, T.INT) = true
         val (trans, post) = transty(tenv, ty)
         val tenv' = S.enter(tenv, name, trans)
       in
-        transdec(env, tenv', A.TypeDec(rest))
+        (*(case S.look(tenv', name) of
+          SOME(T.NAME(sym,typ)) =>
+            (typ:=SOME(trans);
+             if detectLoop(T.NAME(sym,typ),
+                           stepThrough(T.NAME(sym,typ), tenv,pos),
+                           tenv, pos)
+             then typ:= SOME(T.INT) else ();*)
+             transdec(env, tenv', A.TypeDec(rest))
+
+        (*| _ => (env, tenv))*)
       end
     | transdec (env, tenv, A.TypeDec(nil)) = (env, tenv)
 
@@ -573,5 +559,3 @@ fun   boolTypes (T.INT, T.INT) = true
   fun transprog prog = transexp (E.base_env, E.base_tenv) prog
 
 end  (* structure Semant *)
-  
-
